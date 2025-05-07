@@ -2,95 +2,109 @@ import streamlit as st
 import requests
 from datetime import datetime
 
-API_KEY = "c67ba6d52da5d8ec46c08a9f5037cc6c"
-SPORTS_URL = f"https://api.the-odds-api.com/v4/sports/upcoming/odds?apiKey={API_KEY}&regions=uk&markets=h2h&oddsFormat=decimal"
-
-# Load CSS
+# Load custom CSS
 with open("style.css") as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
+# Odds API key
+API_KEY = "c67ba6d52da5d8ec46c08a9f5037cc6c"
+API_URL = "https://api.the-odds-api.com/v4/sports/?regions=eu&markets=h2h,draw_no_bet,spreads,totals&oddsFormat=decimal&apiKey=" + API_KEY
+
+# Bookmaker logos mapping
+BOOKMAKER_LOGOS = {
+    "coral": "coral.png",
+    "ladbrokes_uk": "ladbrokes_uk.png",
+    "livescorebet": "livescorebet.png",
+    "mrgreen": "mrgreen.png",
+    "skybet": "skybet.png",
+    "virginbet": "virginbet.png",
+    "grosvenor": "grosvenor.png",
+    "leovegas": "leovegas.png",
+    "matchbook": "matchbook.png",
+    "paddypower": "paddypower.png",
+    "unibet_uk": "unibet_uk.png",
+    "williamhill": "williamhill.png",
+    "betfair": "betfair.png",
+    "casumo": "casumo.png"
+}
+
+# Header
 st.title("Fire Bet AI – Arbitrage Finder")
 
 # Refresh button
-if st.button("Refresh Arbitrage Opportunities"):
+if st.button("Refresh"):
     st.experimental_rerun()
 
-def calculate_implied_prob(odds):
-    return round(1 / odds, 4)
-
-def calculate_arbitrage(odds_list):
-    total_inverse = sum([1/o for o in odds_list if o])
-    return total_inverse, total_inverse < 1
-
-def fetch_odds():
-    try:
-        response = requests.get(SPORTS_URL)
-        data = response.json()
-        opportunities = []
-
-        for match in data:
-            if len(match["bookmakers"]) < 2:
-                continue
-
-            best_odds = {}
-            for bookmaker in match["bookmakers"]:
-                for outcome in bookmaker["markets"][0]["outcomes"]:
-                    name = outcome["name"]
-                    if name not in best_odds or outcome["price"] > best_odds[name]["odds"]:
-                        best_odds[name] = {
-                            "odds": outcome["price"],
-                            "bookmaker": bookmaker["key"],
-                            "logo": f"static/{bookmaker['key']}.png"
-                        }
-
-            if len(best_odds) >= 2:
-                odds_vals = [item["odds"] for item in best_odds.values()]
-                total_prob, is_arb = calculate_arbitrage(odds_vals)
-                if is_arb:
-                    opportunity = {
-                        "match": match["teams"],
-                        "time": match["commence_time"],
-                        "implied_prob": total_prob,
-                        "profit_margin": round((1 - total_prob) * 100, 2),
-                        "bookmakers": []
-                    }
-                    for name, details in best_odds.items():
-                        opportunity["bookmakers"].append({
-                            "team": name,
-                            "odds": details["odds"],
-                            "prob": f"{round(100 / details['odds'], 2)}%",
-                            "logo": details["logo"],
-                            "bookie": details["bookmaker"]
-                        })
-                    opportunities.append(opportunity)
-        return opportunities
-    except Exception as e:
-        st.error("Failed to fetch or parse API data.")
+# Load data
+@st.cache_data(ttl=300)
+def get_odds_data():
+    response = requests.get(API_URL)
+    if response.status_code != 200:
         return []
+    sports = response.json()
+    arbitrage_data = []
 
-arbs = fetch_odds()
+    for sport in sports:
+        sport_key = sport["key"]
+        odds_url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?regions=eu&markets=h2h&oddsFormat=decimal&apiKey={API_KEY}"
+        odds_resp = requests.get(odds_url)
+        if odds_resp.status_code != 200:
+            continue
+        events = odds_resp.json()
+        for event in events:
+            outcomes = []
+            for bookmaker in event.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    if market["key"] == "h2h":
+                        for i, outcome in enumerate(market["outcomes"]):
+                            if len(outcomes) <= i:
+                                outcomes.append([])
+                            outcomes[i].append({
+                                "team": outcome["name"],
+                                "odds": outcome["price"],
+                                "bookmaker": bookmaker["key"]
+                            })
 
-# Display arbitrage cards
-for arb in arbs:
-    match_time = datetime.fromisoformat(arb["time"].replace("Z", "+00:00"))
-    hours = int((match_time - datetime.utcnow()).total_seconds() // 3600)
+            if len(outcomes) >= 2:
+                try:
+                    o1 = max(outcomes[0], key=lambda x: x["odds"])
+                    o2 = max(outcomes[1], key=lambda x: x["odds"])
+                    if len(outcomes) == 3:
+                        o3 = max(outcomes[2], key=lambda x: x["odds"])
+                        total_prob = sum([1/o1["odds"], 1/o2["odds"], 1/o3["odds"]])
+                        if total_prob < 1:
+                            arbitrage_data.append({
+                                "match": event["home_team"] + " vs " + event["away_team"],
+                                "profit_margin": f"{round((1 - total_prob) * 100, 2)}%",
+                                "implied_prob": round(total_prob, 3),
+                                "time": "soon",
+                                "bookmakers": [o1, o2, o3]
+                            })
+                except:
+                    continue
+    return arbitrage_data
 
-    st.markdown(f"""
-        <div class='arb-card'>
-            <div class='arb-header'>{arb["profit_margin"]}% at {arb["implied_prob"]} {hours}h</div>
-            <div class='arb-body'>
-    """, unsafe_allow_html=True)
+arbs = get_odds_data()
 
-    for b in arb["bookmakers"]:
-        st.markdown(f"""
-                <div class='bookie-column'>
-                    <img src='{b["logo"]}' class='bookie-logo' />
-                    <div class='team-name'>{b["team"]}</div>
-                    <div class='team-odds'>{b["prob"]} at {b["odds"]}</div>
+# Show arbitrage opportunities
+if arbs:
+    for arb in arbs:
+        st.markdown(f'''
+            <div class="arb-card">
+                <div class="arb-header">{arb['profit_margin']} at {arb['implied_prob']} — {arb['time']}</div>
+                <div class="arb-body">
+        ''', unsafe_allow_html=True)
+
+        for bookie in arb["bookmakers"]:
+            logo = BOOKMAKER_LOGOS.get(bookie["bookmaker"], "")
+            st.markdown(f'''
+                <div class="bookie-column">
+                    <img src="app/static/{logo}" class="bookie-logo" />
+                    <div class="team-name">{bookie['team']}</div>
+                    <div class="team-odds">{round(100/bookie['odds'], 2)}% at {bookie['odds']}</div>
                 </div>
-        """, unsafe_allow_html=True)
+            ''', unsafe_allow_html=True)
 
-    st.markdown("""
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+        st.markdown("</div></div>", unsafe_allow_html=True)
+else:
+    st.warning("No arbitrage opportunities found at this time.")
