@@ -13,7 +13,7 @@ with open("style.css") as f:
 st.title("Fire Bet AI – Arbitrage Finder")
 
 # Set your Odds API key
-API_KEY = "c67ba6d52da5d8ec46c08a9f5037cc6c"
+API_KEY = "9d23c14ba9006f46fd0fe7968b490671"
 SPORT = "soccer_epl"
 REGION = "uk"
 MARKETS = "h2h"
