@@ -1,96 +1,81 @@
 import streamlit as st
 import requests
-import os
 from datetime import datetime
 
 # Load custom CSS
 with open("style.css") as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-st.title("Fire Bet AI – Arbitrage Finder")
+st.title("Fire Bet AI – Arbitrage Finder (API-Football Edition)")
 
-API_KEY = "9d23c14ba9006f46fd0fe7968b490671"
-API_URL = "https://api.the-odds-api.com/v4/sports"
+API_KEY = "1e5138cdf1msh25d26bc2da70f1dp1fe643jsnea43c578c7f8"
+API_HOST = "api-football-v1.p.rapidapi.com"
 
-def get_all_odds():
-    sports = requests.get(f"{API_URL}?apiKey={API_KEY}").json()
-    all_odds = []
+def get_odds_data():
+    url = "https://api-football-v1.p.rapidapi.com/v3/odds"
+    headers = {
+        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Host": API_HOST
+    }
+    params = {"region": "eu"}  # All European odds
 
-    for sport in sports:
-        sport_key = sport["key"]
-        try:
-            odds_response = requests.get(
-                f"{API_URL}/{sport_key}/odds",
-                params={
-                    "apiKey": API_KEY,
-                    "regions": "eu,uk,us,au",
-                    "markets": "h2h,spreads,totals",
-                    "oddsFormat": "decimal"
-                }
-            )
-            odds_data = odds_response.json()
-            if isinstance(odds_data, list):
-                all_odds.extend(odds_data)
-        except Exception as e:
-            print(f"Error fetching odds for {sport_key}: {e}")
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
+        return data.get("response", [])
+    except Exception as e:
+        st.error(f"Failed to fetch odds data: {e}")
+        return []
 
-    return all_odds
-
-def find_arbitrage(odds_data):
+def find_arbitrage(odds_response):
     opportunities = []
-    for game in odds_data:
+    for match in odds_response:
         try:
-            teams = game["teams"]
-            commence_time = datetime.fromisoformat(game["commence_time"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
-            for bookmaker in game.get("bookmakers", []):
-                for market in bookmaker.get("markets", []):
-                    outcomes = market.get("outcomes", [])
-                    if len(outcomes) < 2:
+            bookmakers = match.get("bookmakers", [])
+            best_odds = {}
+            for book in bookmakers:
+                for bet in book.get("bets", []):
+                    if bet.get("name") != "Match Winner":
                         continue
+                    for val in bet.get("values", []):
+                        team = val["value"]
+                        odd = float(val["odd"])
+                        if team not in best_odds or odd > best_odds[team]:
+                            best_odds[team] = odd
 
-                    best_odds = {}
-                    for o in outcomes:
-                        name = o["name"]
-                        price = o["price"]
-                        if name not in best_odds or price > best_odds[name]:
-                            best_odds[name] = price
-
-                    inv_sum = sum(1 / price for price in best_odds.values())
-                    if inv_sum < 1:
-                        profit_margin = (1 - inv_sum) * 100
-                        opportunities.append({
-                            "match": teams,
-                            "time": commence_time,
-                            "market": market["key"],
-                            "best_odds": best_odds,
-                            "profit": round(profit_margin, 2)
-                        })
+            if len(best_odds) >= 2:
+                inv_sum = sum(1 / odd for odd in best_odds.values())
+                if inv_sum < 1:
+                    profit = round((1 - inv_sum) * 100, 2)
+                    opportunities.append({
+                        "teams": match["teams"],
+                        "league": match["league"]["name"],
+                        "time": match["fixture"]["date"],
+                        "odds": best_odds,
+                        "profit": profit
+                    })
         except Exception as e:
-            print(f"Error processing game: {e}")
-    # Sort by highest profit
+            print(f"Error processing match: {e}")
     opportunities.sort(key=lambda x: x["profit"], reverse=True)
     return opportunities
 
-# Load data
-with st.spinner("Fetching latest odds and scanning for arbitrage..."):
-    odds = get_all_odds()
-    arbs = find_arbitrage(odds)
+# Fetch and display arbitrage opportunities
+with st.spinner("Fetching odds and detecting arbitrage..."):
+    odds_data = get_odds_data()
+    arbitrage_opps = find_arbitrage(odds_data)
 
-# Display results
-if arbs:
-    for arb in arbs:
-        st.markdown(f"""
+if arbitrage_opps:
+    for arb in arbitrage_opps:
+        st.markdown(f'''
         <div class="card">
-            <div class="match">{arb['match'][0]} vs {arb['match'][1]}</div>
-            <div class="time">Kickoff: {arb['time']}</div>
-            <div class="market">Market: {arb['market'].capitalize()}</div>
-            <div class="profit">Profit: {arb['profit']}%</div>
+            <div class="match">{arb["teams"]["home"]} vs {arb["teams"]["away"]}</div>
+            <div class="league">{arb["league"]}</div>
+            <div class="time">Kickoff: {datetime.fromisoformat(arb["time"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")}</div>
+            <div class="profit">Profit: {arb["profit"]}%</div>
             <div class="odds">
-        """, unsafe_allow_html=True)
-
-        for team, odd in arb["best_odds"].items():
+        ''', unsafe_allow_html=True)
+        for team, odd in arb["odds"].items():
             st.markdown(f"<span>{team}: {odd}</span><br>", unsafe_allow_html=True)
-
         st.markdown("</div></div><br>", unsafe_allow_html=True)
 else:
     st.info("No arbitrage opportunities found.")
