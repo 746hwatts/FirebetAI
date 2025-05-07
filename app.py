@@ -1,97 +1,100 @@
 import streamlit as st
 import requests
+import os
+from datetime import datetime
+
+# Load custom CSS
+with open("style.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+st.title("Fire Bet AI – Arbitrage Finder")
 
 API_KEY = "9d23c14ba9006f46fd0fe7968b490671"
 API_URL = "https://api.the-odds-api.com/v4/sports"
 
-# Load custom CSS
-def load_css(file_name="style.css"):
-    with open(file_name) as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+def get_all_odds():
+    sports = requests.get(f"{API_URL}?apiKey={API_KEY}").json()
+    all_odds = []
 
-# Arbitrage detection
-def find_arbitrage(events):
-    arbitrage_opps = []
-    for game in events:
-        try:
-            teams = game["teams"]
-            bookmakers = game["bookmakers"]
-            best_odds = {}
-            best_books = {}
-
-            for bookmaker in bookmakers:
-                for market in bookmaker["markets"]:
-                    if market["key"] == "h2h":
-                        for outcome in market["outcomes"]:
-                            team = outcome["name"]
-                            price = outcome["price"]
-                            if team not in best_odds or price > best_odds[team]:
-                                best_odds[team] = price
-                                best_books[team] = bookmaker["title"]
-
-            if len(best_odds) == 2:
-                inv_sum = sum(1 / odd for odd in best_odds.values())
-                if inv_sum < 1:
-                    profit_percent = round((1 - inv_sum) * 100, 2)
-                    arbitrage_opps.append({
-                        "match": teams,
-                        "odds": best_odds,
-                        "bookmakers": best_books,
-                        "profit": profit_percent
-                    })
-
-        except KeyError:
-            continue
-    return arbitrage_opps
-
-# Fetch odds for all sports
-def fetch_all_odds():
-    sports_res = requests.get(f"{API_URL}?apiKey={API_KEY}")
-    if sports_res.status_code != 200:
-        st.error("Failed to fetch sports list.")
-        return []
-
-    sports = sports_res.json()
-    all_events = []
     for sport in sports:
         sport_key = sport["key"]
-        odds_res = requests.get(
-            f"{API_URL}/{sport_key}/odds",
-            params={
-                "apiKey": API_KEY,
-                "regions": "eu",
-                "markets": "h2h",
-                "oddsFormat": "decimal"
-            }
-        )
-        if odds_res.status_code == 200:
-            all_events.extend(odds_res.json())
-    return all_events
+        try:
+            odds_response = requests.get(
+                f"{API_URL}/{sport_key}/odds",
+                params={
+                    "apiKey": API_KEY,
+                    "regions": "eu,uk,us,au",
+                    "markets": "h2h,spreads,totals",
+                    "oddsFormat": "decimal"
+                }
+            )
+            odds_data = odds_response.json()
+            if isinstance(odds_data, list):
+                all_odds.extend(odds_data)
+        except Exception as e:
+            print(f"Error fetching odds for {sport_key}: {e}")
 
-# Main app
-st.set_page_config(page_title="Fire Bet AI – Arbitrage Finder")
-load_css()
-st.title("Fire Bet AI – Arbitrage Finder")
+    return all_odds
 
+def find_arbitrage(odds_data):
+    opportunities = []
+    for game in odds_data:
+        try:
+            teams = game["teams"]
+            commence_time = datetime.fromisoformat(game["commence_time"].replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+            for bookmaker in game.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    outcomes = market.get("outcomes", [])
+                    if len(outcomes) < 2:
+                        continue
+
+                    best_odds = {}
+                    for o in outcomes:
+                        name = o["name"]
+                        price = o["price"]
+                        if name not in best_odds or price > best_odds[name]:
+                            best_odds[name] = price
+
+                    inv_sum = sum(1 / price for price in best_odds.values())
+                    if inv_sum < 1:
+                        profit_margin = (1 - inv_sum) * 100
+                        opportunities.append({
+                            "match": teams,
+                            "time": commence_time,
+                            "market": market["key"],
+                            "best_odds": best_odds,
+                            "profit": round(profit_margin, 2)
+                        })
+        except Exception as e:
+            print(f"Error processing game: {e}")
+    # Sort by highest profit
+    opportunities.sort(key=lambda x: x["profit"], reverse=True)
+    return opportunities
+
+# Load data
+with st.spinner("Fetching latest odds and scanning for arbitrage..."):
+    odds = get_all_odds()
+    arbs = find_arbitrage(odds)
+
+# Display results
+if arbs:
+    for arb in arbs:
+        st.markdown(f"""
+        <div class="card">
+            <div class="match">{arb['match'][0]} vs {arb['match'][1]}</div>
+            <div class="time">Kickoff: {arb['time']}</div>
+            <div class="market">Market: {arb['market'].capitalize()}</div>
+            <div class="profit">Profit: {arb['profit']}%</div>
+            <div class="odds">
+        """, unsafe_allow_html=True)
+
+        for team, odd in arb["best_odds"].items():
+            st.markdown(f"<span>{team}: {odd}</span><br>", unsafe_allow_html=True)
+
+        st.markdown("</div></div><br>", unsafe_allow_html=True)
+else:
+    st.info("No arbitrage opportunities found.")
+
+# Refresh button
 if st.button("Refresh Arbitrage Bets"):
-    with st.spinner("Scanning all sports and leagues..."):
-        odds = fetch_all_odds()
-        arbs = find_arbitrage(odds)
-
-        if arbs:
-            for arb in arbs:
-                st.markdown(f"""
-                <div class="arb-card">
-                    <strong>Match:</strong> {arb['match'][0]} vs {arb['match'][1]}<br>
-                    <strong>Profit:</strong> {arb['profit']}%<br>
-                    <strong>{arb['match'][0]}:</strong> {arb['odds'][arb['match'][0]]} @ {arb['bookmakers'][arb['match'][0]]}<br>
-                    <strong>{arb['match'][1]}:</strong> {arb['odds'][arb['match'][1]]} @ {arb['bookmakers'][arb['match'][1]]}
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("No arbitrage opportunities found.")
-
-# Auto-run on page load
-if "ran_on_load" not in st.session_state:
-    st.session_state.ran_on_load = True
-    st.experimental_rerun()
+    st.rerun()
